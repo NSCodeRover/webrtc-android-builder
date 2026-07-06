@@ -67,10 +67,11 @@ jobs:
 
       - name: Run hooks and install Android build deps
         run: |
-          cd webrtc-build/src
-          # Run hooks to download toolchain (clang, NDK, etc.)
+          # gclient runhooks must run from the directory containing .gclient
+          cd webrtc-build
           gclient runhooks
           # Install Linux build dependencies
+          cd src
           ./build/install-build-deps.sh --no-prompt --no-chromeos-fonts || true
           # Install Android-specific dependencies
           if [ -f ./build/install-build-deps-android.sh ]; then
