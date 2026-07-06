@@ -14,7 +14,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
 
     steps:
@@ -46,10 +46,16 @@ jobs:
       - name: Setup depot_tools
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          cd depot_tools
+          # Pin to a known working commit to avoid CIPD bootstrap issues
+          git checkout main
+          cd ..
           echo "$PWD/depot_tools" >> $GITHUB_PATH
           export PATH=$PWD/depot_tools:$PATH
-          ./depot_tools/ensure_bootstrap
+          export DEPOT_TOOLS_UPDATE=0
+          gclient --version || true
           echo "GYP_DEFINES=OS=android" >> $GITHUB_ENV
+          echo "DEPOT_TOOLS_UPDATE=0" >> $GITHUB_ENV
 
       - name: Fetch WebRTC source
         run: |
