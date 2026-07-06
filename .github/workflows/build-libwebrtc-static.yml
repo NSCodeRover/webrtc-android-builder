@@ -31,42 +31,56 @@ jobs:
           echo "version=${MAJOR}.${MINOR}.${BUILD}.${PATCH}" >> $GITHUB_OUTPUT
           echo "WebRTC version: M${MAJOR} (${MAJOR}.${MINOR}.${BUILD}.${PATCH})"
 
-      - name: Free disk space
+      - name: Maximize disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo rm -rf /usr/local/share/boost /usr/local/graalvm /usr/local/share/powershell
+          sudo rm -rf /usr/local/share/chromium /usr/local/lib/node_modules
           sudo docker system prune -af || true
+          sudo apt-get clean && sudo apt-get autoclean
+          echo "Disk space after cleanup:"
           df -h /
 
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq git python3 curl build-essential ccache \
-            pkg-config libglib2.0-dev libgtk-3-dev lsb-release
+            pkg-config libglib2.0-dev libgtk-3-dev lsb-release rsync
 
       - name: Setup depot_tools
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          cd depot_tools
-          # Pin to a known working commit to avoid CIPD bootstrap issues
-          git checkout main
-          cd ..
           echo "$PWD/depot_tools" >> $GITHUB_PATH
           export PATH=$PWD/depot_tools:$PATH
           export DEPOT_TOOLS_UPDATE=0
           gclient --version || true
-          echo "GYP_DEFINES=OS=android" >> $GITHUB_ENV
           echo "DEPOT_TOOLS_UPDATE=0" >> $GITHUB_ENV
 
       - name: Fetch WebRTC source
         run: |
           mkdir webrtc-build && cd webrtc-build
           fetch --nohooks webrtc_android
-          gclient sync --no-history --revision src@${{ github.event.inputs.webrtc_branch }} --delete_unversioned_trees --jobs=4
+          gclient sync --no-history --nohooks --revision src@${{ github.event.inputs.webrtc_branch }} --delete_unversioned_trees --jobs=4
+          echo "Disk after fetch:"
+          df -h /
 
-      - name: Install WebRTC build deps
+      - name: Run hooks and install Android build deps
         run: |
           cd webrtc-build/src
-          ./build/install-build-deps.sh --no-prompt --no-chromeos-fonts --android
+          # Run hooks to download toolchain (clang, NDK, etc.)
+          gclient runhooks
+          # Install Linux build dependencies
+          ./build/install-build-deps.sh --no-prompt --no-chromeos-fonts || true
+          # Install Android-specific dependencies
+          if [ -f ./build/install-build-deps-android.sh ]; then
+            ./build/install-build-deps-android.sh || true
+          fi
+
+      - name: Patch thin archives for compatibility
+        run: |
+          cd webrtc-build/src
+          # Disable thin archives to produce portable .a files
+          sed -i 's/arflags = \[ "-T" \]/# arflags = [ "-T" ] # Disabled for portable .a/' build/config/BUILD.gn || true
 
       - name: Build libwebrtc.a for each ABI
         run: |
@@ -92,6 +106,7 @@ jobs:
             gn gen "out/$ARCH" --args="
               target_os=\"android\"
               target_cpu=\"$TARGET_CPU\"
+              android_ndk_api_level=23
               is_debug=false
               is_component_build=false
               is_clang=true
@@ -112,14 +127,9 @@ jobs:
 
             echo "Built: out/$ARCH/obj/libwebrtc.a"
             ls -lh "out/$ARCH/obj/libwebrtc.a"
+            echo "Disk after $ARCH build:"
+            df -h /
           done
-
-      - name: Build libwebrtc.jar
-        run: |
-          cd webrtc-build/src
-          # Build Java bindings JAR
-          ninja -C "out/arm64-v8a" sdk/android:libwebrtc || true
-          find out/ -name "*.jar" | head -10
 
       - name: Package artifacts
         run: |
@@ -136,57 +146,26 @@ jobs:
             cp "out/${ARCH}/obj/libwebrtc.a" "/tmp/libwebrtc-android-${MILESTONE}/lib/${ARCH}/"
           done
 
-          # Copy JAR if built
-          JAR=$(find out/ -name "lib.java*.jar" -o -name "libwebrtc.jar" | head -1)
-          if [ -n "$JAR" ]; then
-            cp "$JAR" "/tmp/libwebrtc-android-${MILESTONE}/lib/libwebrtc.jar"
-          fi
-
-          # Copy essential headers
+          # Copy essential headers for mediasoup
           mkdir -p /tmp/libwebrtc-android-${MILESTONE}/include
+          for DIR in api rtc_base p2p pc media modules call common_video logging system_wrappers; do
+            rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
+              ${DIR}/ /tmp/libwebrtc-android-${MILESTONE}/include/${DIR}/ 2>/dev/null || true
+          done
           rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            api/ /tmp/libwebrtc-android-${MILESTONE}/include/api/
+            sdk/android/ /tmp/libwebrtc-android-${MILESTONE}/include/sdk/android/ 2>/dev/null || true
           rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            rtc_base/ /tmp/libwebrtc-android-${MILESTONE}/include/rtc_base/
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            p2p/ /tmp/libwebrtc-android-${MILESTONE}/include/p2p/
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            pc/ /tmp/libwebrtc-android-${MILESTONE}/include/pc/
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            media/ /tmp/libwebrtc-android-${MILESTONE}/include/media/
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            modules/ /tmp/libwebrtc-android-${MILESTONE}/include/modules/
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            sdk/android/ /tmp/libwebrtc-android-${MILESTONE}/include/sdk/android/
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            call/ /tmp/libwebrtc-android-${MILESTONE}/include/call/
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            common_video/ /tmp/libwebrtc-android-${MILESTONE}/include/common_video/
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            logging/ /tmp/libwebrtc-android-${MILESTONE}/include/logging/
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            system_wrappers/ /tmp/libwebrtc-android-${MILESTONE}/include/system_wrappers/
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            third_party/abseil-cpp/ /tmp/libwebrtc-android-${MILESTONE}/include/third_party/abseil-cpp/
+            third_party/abseil-cpp/ /tmp/libwebrtc-android-${MILESTONE}/include/third_party/abseil-cpp/ 2>/dev/null || true
 
           # Write build info
-          cat > /tmp/libwebrtc-android-${MILESTONE}/README.md << EOF
-          # libwebrtc ${MILESTONE} for Android (static library)
+          cat > /tmp/libwebrtc-android-${MILESTONE}/README.md << 'READMEEOF'
+          # libwebrtc for Android (static library)
+          Built for mediasoup integration.
+          READMEEOF
 
-          Branch: ${{ github.event.inputs.webrtc_branch }}
-          Version: ${VERSION}
-          Architectures: ${{ github.event.inputs.target_arch }}
-          Built: $(date -u +"%Y-%m-%d %H:%M UTC")
-
-          ## GN args
-          target_os="android", is_debug=false, is_component_build=false,
-          is_clang=true, rtc_include_tests=false, rtc_use_h264=true,
-          use_rtti=true, use_custom_libcxx=false
-
-          ## Usage with mediasoup
-          Copy lib/{ABI}/libwebrtc.a to deps/webrtc/lib/{ABI}/
-          Copy include/ to deps/webrtc/src/
-          EOF
+          echo "Branch: ${{ github.event.inputs.webrtc_branch }}" >> /tmp/libwebrtc-android-${MILESTONE}/README.md
+          echo "Version: ${VERSION}" >> /tmp/libwebrtc-android-${MILESTONE}/README.md
+          echo "Architectures: ${{ github.event.inputs.target_arch }}" >> /tmp/libwebrtc-android-${MILESTONE}/README.md
 
           # Create tarball
           cd /tmp
@@ -194,7 +173,7 @@ jobs:
           sha256sum libwebrtc-android-${MILESTONE}.tar.gz > libwebrtc-android-${MILESTONE}.tar.gz.sha256
           ls -lh libwebrtc-android-${MILESTONE}.tar.gz
 
-      - name: Upload libwebrtc.a artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: libwebrtc-android-${{ steps.version.outputs.milestone }}
