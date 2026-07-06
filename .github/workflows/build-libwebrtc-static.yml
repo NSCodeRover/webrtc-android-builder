@@ -52,8 +52,9 @@ jobs:
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
           echo "$PWD/depot_tools" >> $GITHUB_PATH
           export PATH=$PWD/depot_tools:$PATH
-          export DEPOT_TOOLS_UPDATE=0
-          gclient --version || true
+          # Bootstrap depot_tools fully
+          ./depot_tools/ensure_bootstrap
+          gclient --version
           echo "DEPOT_TOOLS_UPDATE=0" >> $GITHUB_ENV
 
       - name: Fetch WebRTC source
@@ -83,8 +84,11 @@ jobs:
           sed -i 's/arflags = \[ "-T" \]/# arflags = [ "-T" ] # Disabled for portable .a/' build/config/BUILD.gn || true
 
       - name: Build libwebrtc.a for each ABI
+        env:
+          CHROMIUM_BUILDTOOLS_PATH: ${{ github.workspace }}/webrtc-build/src/buildtools
         run: |
           cd webrtc-build/src
+          export PATH=${{ github.workspace }}/depot_tools:$PATH
           IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
 
           for ARCH in "${ARCHS[@]}"; do
