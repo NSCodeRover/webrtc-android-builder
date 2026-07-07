@@ -71,10 +71,10 @@ jobs:
           IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
 
           # Patch build_aar.py to build 'webrtc' target (produces correct libwebrtc.a)
-          # instead of 'sdk/android:libwebrtc' + 'libjingle_peerconnection_so' (produces .so + .jar)
-          sed -i "s/'sdk\/android:libwebrtc', 'sdk\/android:libjingle_peerconnection_so'/'webrtc'/" tools_webrtc/android/build_aar.py
-          echo "Patched build_aar.py targets:"
-          grep -n "webrtc" tools_webrtc/android/build_aar.py | grep -i "target\|NICKLIST\|ninja" | head -5
+          # TARGETS is multi-line in M140, so use sed range replacement
+          sed -i '/^TARGETS = \[/,/^\]/c\TARGETS = ["webrtc"]' tools_webrtc/android/build_aar.py
+          echo "Patched TARGETS:"
+          grep "TARGETS" tools_webrtc/android/build_aar.py
 
           for ARCH in "${ARCHS[@]}"; do
             ARCH=$(echo "$ARCH" | xargs)
@@ -84,14 +84,20 @@ jobs:
 
             # build_aar.py now builds 'webrtc' target → produces obj/libwebrtc.a directly
             # No .so link, no _Unwind issue, no duplicate JNI_OnLoad
+            # build_aar.py: gn gen + ninja webrtc succeed, but AAR packaging fails
+            # (no .so/.jar from 'webrtc' target) — that's fine, we only need the .a
             python3 tools_webrtc/android/build_aar.py \
               --arch $ARCH \
               --build-dir out/build \
               --output /tmp/unused-${ARCH}.aar \
-              --extra-gn-args "$EXTRA_GN_ARGS"
+              --extra-gn-args "$EXTRA_GN_ARGS" || true
 
-            # libwebrtc.a is now at out/build/{ARCH}/obj/libwebrtc.a
+            # Verify libwebrtc.a was produced by the 'webrtc' target
             ls -lh "out/build/$ARCH/obj/libwebrtc.a"
+            if [ ! -f "out/build/$ARCH/obj/libwebrtc.a" ]; then
+              echo "ERROR: libwebrtc.a not found for $ARCH"
+              exit 1
+            fi
             ar t "out/build/$ARCH/obj/libwebrtc.a" | wc -l | xargs -I{} echo "Objects in archive: {}"
 
             # Save and clean for disk space
