@@ -79,7 +79,7 @@ jobs:
             $ARCH_ARGS \
             --build-dir out/android \
             --output /tmp/libwebrtc.aar \
-            --extra-gn-args "is_debug=false is_component_build=false is_clang=true rtc_include_tests=false rtc_build_examples=false rtc_use_h264=true rtc_enable_protobuf=false use_custom_libcxx=false use_rtti=true treat_warnings_as_errors=false android_static_analysis=\"off\""
+            --extra-gn-args "is_debug=false is_component_build=false is_clang=true rtc_include_tests=false rtc_build_examples=false rtc_use_h264=true rtc_enable_protobuf=false use_custom_libcxx=false use_rtti=true treat_warnings_as_errors=false android_static_analysis=\"off\" use_siso=false"
 
           echo "AAR built successfully"
           ls -lh /tmp/libwebrtc.aar
