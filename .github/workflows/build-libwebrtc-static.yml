@@ -91,19 +91,29 @@ jobs:
             echo "Merging .a files into libwebrtc.a for $ARCH..."
             LLVM_AR=$(find . -path "*/llvm-build/*/bin/llvm-ar" -type f | head -1)
             AR_TOOL=${LLVM_AR:-ar}
-            mkdir -p /tmp/merge-${ARCH}
-            # Exclude SDK JNI wrappers that contain JNI_OnLoad (conflicts with our JNI code)
+            MERGE_DIR="/tmp/merge-${ARCH}"
+            rm -rf "$MERGE_DIR" && mkdir -p "$MERGE_DIR"
+
+            # Extract .o from each .a into uniquely-named subdirs to avoid filename collisions
+            IDX=0
             find "out/build/$ARCH/obj" -name "*.a" \
               ! -name "libwebrtc.a" \
-              ! -path "*/sdk/android/libjingle_peerconnection_so*" \
+              ! -path "*/libjingle_peerconnection_so*" \
               | while read a; do
-              $AR_TOOL x "$a" --output="/tmp/merge-${ARCH}/" 2>/dev/null || true
+              SUBDIR="$MERGE_DIR/$IDX"
+              mkdir -p "$SUBDIR"
+              cd "$SUBDIR" && $AR_TOOL x "$a" 2>/dev/null || true
+              cd - >/dev/null
+              IDX=$((IDX + 1))
             done
-            OBJ_COUNT=$(ls /tmp/merge-${ARCH}/*.o 2>/dev/null | wc -l)
+
+            # Count and merge using find + xargs (avoids ARG_MAX)
+            OBJ_COUNT=$(find "$MERGE_DIR" -name "*.o" | wc -l)
             echo "Extracted $OBJ_COUNT objects from sub-libraries"
-            $AR_TOOL rcs "out/build/$ARCH/obj/libwebrtc.a" /tmp/merge-${ARCH}/*.o
-            rm -rf /tmp/merge-${ARCH}
+            find "$MERGE_DIR" -name "*.o" | xargs $AR_TOOL rcs "out/build/$ARCH/obj/libwebrtc.a"
+            rm -rf "$MERGE_DIR"
             ls -lh "out/build/$ARCH/obj/libwebrtc.a"
+            echo "Objects in archive: $($AR_TOOL t out/build/$ARCH/obj/libwebrtc.a | wc -l)"
             ar t "out/build/$ARCH/obj/libwebrtc.a" | wc -l | xargs -I{} echo "Objects in archive: {}"
 
             # Save and clean for disk space
