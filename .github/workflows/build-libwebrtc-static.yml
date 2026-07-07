@@ -18,29 +18,29 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Detect WebRTC milestone
+      - name: Detect version
         id: version
         run: |
           BRANCH="${{ github.event.inputs.webrtc_branch }}"
           VERSION_RAW=$(curl -s "https://chromium.googlesource.com/chromium/src/+/${BRANCH}/chrome/VERSION?format=TEXT" | base64 -d)
           MAJOR=$(echo "$VERSION_RAW" | grep "MAJOR" | cut -d= -f2)
           echo "milestone=M${MAJOR}" >> $GITHUB_OUTPUT
-          echo "WebRTC milestone: M${MAJOR}"
+          echo "Building WebRTC M${MAJOR}"
 
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
           sudo rm -rf /usr/local/share/boost /usr/local/graalvm /usr/local/share/powershell
           sudo rm -rf /usr/local/share/chromium /usr/local/lib/node_modules
-          sudo docker system prune -af || true
+          sudo docker system prune -af 2>/dev/null || true
           sudo apt-get clean
           df -h /
 
-      - name: Install build dependencies
+      - name: Install deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq git python3 curl build-essential \
-            pkg-config libglib2.0-dev libgtk-3-dev lsb-release rsync
+            pkg-config libglib2.0-dev libgtk-3-dev lsb-release ninja-build
 
       - name: Setup depot_tools
         run: |
@@ -48,170 +48,85 @@ jobs:
           echo "${{ github.workspace }}/depot_tools" >> $GITHUB_PATH
           echo "DEPOT_TOOLS_UPDATE=0" >> $GITHUB_ENV
 
-      - name: Cache WebRTC source
-        id: cache-webrtc
-        uses: actions/cache@v4
-        with:
-          path: webrtc-build
-          key: webrtc-source-${{ github.event.inputs.webrtc_branch }}-${{ runner.os }}
-
-      - name: Fetch and sync WebRTC source
+      - name: Fetch WebRTC source
         run: |
-          if [ -d "webrtc-build/src" ]; then
-            echo "Using cached WebRTC source"
-            cd webrtc-build
-            gclient sync --delete_unversioned_trees --jobs=4
-          else
-            echo "Fresh fetch — no cache"
-            mkdir -p webrtc-build && cd webrtc-build
-            fetch --nohooks webrtc_android
-            cd src
-            git checkout -b build refs/remotes/branch-heads/$(echo "${{ github.event.inputs.webrtc_branch }}" | sed 's|branch-heads/||')
-            cd ..
-            gclient sync --delete_unversioned_trees --jobs=4
-          fi
+          mkdir webrtc-build && cd webrtc-build
+          fetch --nohooks webrtc_android
+          BRANCH_NUM=$(echo "${{ github.event.inputs.webrtc_branch }}" | sed 's|branch-heads/||')
+          cd src && git checkout -b build refs/remotes/branch-heads/${BRANCH_NUM} && cd ..
+          gclient sync --delete_unversioned_trees --jobs=4
           df -h /
 
-      - name: Install WebRTC build deps
+      - name: Install build deps
         run: |
           cd webrtc-build/src
           ./build/install-build-deps.sh --no-prompt || true
 
-      - name: Patch WebRTC for static library build
-        shell: bash
+      - name: Build libwebrtc.a
         run: |
           cd webrtc-build/src
 
-          # 1. Disable thin archives for portable .a files
-          sed -i.bak 's/arflags = \[ "-T" \]/# arflags = [ "-T" ]/' build/config/compiler/BUILD.gn || true
-          echo "Patch 1: thin archives disabled"
+          EXTRA_GN_ARGS='is_debug=false is_component_build=false is_clang=true rtc_include_tests=false rtc_build_examples=false rtc_use_h264=true rtc_enable_protobuf=false use_custom_libcxx=false use_rtti=true treat_warnings_as_errors=false android_static_analysis="off" android_ndk_api_level=23'
 
-          # 2. Fix _Unwind_Backtrace linker error when use_custom_libcxx=false
-          # Replace existing visibility to include build/config:common_deps
-          sed -i 's|visibility = \[ "//buildtools/third_party/libc++abi" \]|visibility = [ "//build/config:common_deps", "//buildtools/third_party/libc++", "//buildtools/third_party/libc++abi" ]|' buildtools/third_party/libunwind/BUILD.gn 2>/dev/null || true
-          echo "Patch 2: libunwind visibility updated"
-
-          # 3. Link libunwind when custom libcxx is disabled
-          # Use sed to add else branch after the use_custom_libcxx block
-          sed -i '/if (use_custom_libcxx) {/{
-            n
-            /public_deps.*libc++/{
-              n
-              s/}/} else {\n      public_deps += [ "\/\/buildtools\/third_party\/libunwind" ]\n    }/
-            }
-          }' build/config/BUILD.gn 2>/dev/null && echo "Patch 3: libunwind linked" || echo "Patch 3: sed failed, trying alternative"
-          grep -A3 "use_custom_libcxx" build/config/BUILD.gn | head -8
-          echo "All patches applied"
-
-      - name: Build AAR (produces libwebrtc.a as intermediate)
-        run: |
-          cd webrtc-build/src
-
-          # Build using build_aar.py — proven to work, produces .a as intermediate
           IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
-          ARCH_ARGS=""
-          for ARCH in "${ARCHS[@]}"; do
-            ARCH=$(echo "$ARCH" | xargs)
-            ARCH_ARGS="$ARCH_ARGS --arch $ARCH"
-          done
 
-          EXTRA_GN_ARGS="is_debug=false is_component_build=false is_clang=true rtc_include_tests=false rtc_build_examples=false rtc_use_h264=true rtc_enable_protobuf=false use_custom_libcxx=false use_rtti=true treat_warnings_as_errors=false android_static_analysis=\"off\" android_ndk_api_level=23"
-
-          SISO=$(pwd)/third_party/siso/cipd/siso
-
-          # Process each ABI separately — build_aar.py stops at first failure
           for ARCH in "${ARCHS[@]}"; do
             ARCH=$(echo "$ARCH" | xargs)
             echo "========================================="
-            echo "Processing $ARCH"
+            echo "Building $ARCH"
             echo "========================================="
 
-            # Step 1: Run build_aar.py for THIS arch only (runs gn gen + compiles .o files)
-            # Will fail on .so link — that's fine
+            # Step 1: build_aar.py calls gn.py directly (bypasses python3_bin_reldir.txt)
+            # It WILL fail on .so link (_Unwind_Backtrace) — we don't care, we only need gn gen
             python3 tools_webrtc/android/build_aar.py \
               --arch $ARCH \
-              --build-dir out/android \
-              --output /tmp/libwebrtc-${ARCH}.aar \
-              --extra-gn-args "$EXTRA_GN_ARGS" \
-              || true
+              --build-dir out/build \
+              --output /tmp/unused-${ARCH}.aar \
+              --extra-gn-args "$EXTRA_GN_ARGS" || true
 
-            # Step 2: Build 'webrtc' target (produces libwebrtc.a)
-            # Clear siso state so it doesn't resume the failed .so link
-            rm -rf "out/android/$ARCH/siso_output" "out/android/$ARCH/.siso"* 2>/dev/null || true
+            # Step 2: Clean siso state so system ninja doesn't resume failed .so link
+            rm -rf "out/build/$ARCH/.siso"* "out/build/$ARCH/siso_"* "out/build/$ARCH/siso.INFO" 2>/dev/null || true
 
-            # Use system ninja (not siso) to build ONLY the webrtc static library
-            echo "Building libwebrtc.a for $ARCH..."
-            ninja -C "out/android/$ARCH" webrtc
+            # Step 3: Build ONLY the 'webrtc' target = libwebrtc.a (static archive, no linking)
+            ninja -C "out/build/$ARCH" webrtc
+            ls -lh "out/build/$ARCH/obj/libwebrtc.a"
 
-            ls -lh "out/android/$ARCH/obj/libwebrtc.a"
-
-            # Save libwebrtc.a then clean build intermediates to free disk for next ABI
-            cp "out/android/$ARCH/obj/libwebrtc.a" "/tmp/libwebrtc-${ARCH}.a"
-            rm -rf "out/android/$ARCH/obj" "out/android/$ARCH/gen" "out/android/$ARCH/clang_x64"
-            echo "Cleaned intermediates for $ARCH — disk:"
+            # Step 4: Save .a and clean intermediates to free disk for next ABI
+            cp "out/build/$ARCH/obj/libwebrtc.a" "/tmp/libwebrtc-${ARCH}.a"
+            rm -rf "out/build/$ARCH/obj" "out/build/$ARCH/gen" "out/build/$ARCH/clang_x64" 2>/dev/null || true
+            echo "$ARCH done — disk:"
             df -h /
-            echo "Done: $ARCH"
           done
 
-          df -h /
-
-      - name: Extract libwebrtc.a from build output
+      - name: Package
         run: |
           cd webrtc-build/src
           MILESTONE="${{ steps.version.outputs.milestone }}"
+          mkdir -p /tmp/pkg/lib
 
-          mkdir -p /tmp/libwebrtc-android-${MILESTONE}
-
-          # Find and copy libwebrtc.a for each ABI from build intermediates
           IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
           for ARCH in "${ARCHS[@]}"; do
             ARCH=$(echo "$ARCH" | xargs)
-            mkdir -p /tmp/libwebrtc-android-${MILESTONE}/lib/${ARCH}
-
-            # Use saved copy from build step (intermediates were cleaned for disk space)
-            cp "/tmp/libwebrtc-${ARCH}.a" "/tmp/libwebrtc-android-${MILESTONE}/lib/${ARCH}/libwebrtc.a"
-            echo "Copied libwebrtc.a for ${ARCH}"
+            mkdir -p "/tmp/pkg/lib/${ARCH}"
+            cp "/tmp/libwebrtc-${ARCH}.a" "/tmp/pkg/lib/${ARCH}/libwebrtc.a"
+            echo "Packaged $ARCH"
           done
 
-          # Extract classes.jar from any AAR that was partially built
-          for AAR in /tmp/libwebrtc-*.aar; do
-            if [ -f "$AAR" ]; then
-              mkdir -p /tmp/aar-extract
-              unzip -o "$AAR" classes.jar -d /tmp/aar-extract 2>/dev/null || true
-              if [ -f /tmp/aar-extract/classes.jar ]; then
-                cp /tmp/aar-extract/classes.jar /tmp/libwebrtc-android-${MILESTONE}/lib/libwebrtc.jar
-                echo "Extracted libwebrtc.jar"
-                break
-              fi
+          # Headers
+          mkdir -p /tmp/pkg/include
+          for DIR in api rtc_base p2p pc media modules call common_video logging system_wrappers sdk/android third_party/abseil-cpp; do
+            if [ -d "$DIR" ]; then
+              rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
+                "$DIR/" "/tmp/pkg/include/$DIR/" 2>/dev/null || true
             fi
           done
 
-          # Copy headers
-          mkdir -p /tmp/libwebrtc-android-${MILESTONE}/include
-          for DIR in api rtc_base p2p pc media modules call common_video logging system_wrappers; do
-            rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-              ${DIR}/ /tmp/libwebrtc-android-${MILESTONE}/include/${DIR}/ 2>/dev/null || true
-          done
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            sdk/android/ /tmp/libwebrtc-android-${MILESTONE}/include/sdk/android/ 2>/dev/null || true
-          rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
-            third_party/abseil-cpp/ /tmp/libwebrtc-android-${MILESTONE}/include/third_party/abseil-cpp/ 2>/dev/null || true
+          cd /tmp && tar czf "libwebrtc-android-${MILESTONE}.tar.gz" pkg/
+          ls -lh "libwebrtc-android-${MILESTONE}.tar.gz"
 
-          # Tarball
-          cd /tmp
-          tar czf libwebrtc-android-${MILESTONE}.tar.gz libwebrtc-android-${MILESTONE}/
-          ls -lh libwebrtc-android-${MILESTONE}.tar.gz
-
-      - name: Upload full package
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: libwebrtc-android-${{ steps.version.outputs.milestone }}
           path: /tmp/libwebrtc-android-${{ steps.version.outputs.milestone }}.tar.gz
-          retention-days: 90
-
-      - name: Upload AAR
-        uses: actions/upload-artifact@v4
-        with:
-          name: libwebrtc-aar
-          path: /tmp/libwebrtc.aar
           retention-days: 90
