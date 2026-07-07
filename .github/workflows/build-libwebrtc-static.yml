@@ -48,14 +48,28 @@ jobs:
           echo "${{ github.workspace }}/depot_tools" >> $GITHUB_PATH
           echo "DEPOT_TOOLS_UPDATE=0" >> $GITHUB_ENV
 
+      - name: Cache WebRTC source
+        id: cache-webrtc
+        uses: actions/cache@v4
+        with:
+          path: webrtc-build
+          key: webrtc-source-${{ github.event.inputs.webrtc_branch }}-${{ runner.os }}
+
       - name: Fetch and sync WebRTC source
         run: |
-          mkdir webrtc-build && cd webrtc-build
-          fetch --nohooks webrtc_android
-          cd src
-          git checkout -b build refs/remotes/branch-heads/$(echo "${{ github.event.inputs.webrtc_branch }}" | sed 's|branch-heads/||')
-          cd ..
-          gclient sync --delete_unversioned_trees --jobs=4
+          if [ -d "webrtc-build/src" ]; then
+            echo "Using cached WebRTC source"
+            cd webrtc-build
+            gclient sync --delete_unversioned_trees --jobs=4
+          else
+            echo "Fresh fetch — no cache"
+            mkdir -p webrtc-build && cd webrtc-build
+            fetch --nohooks webrtc_android
+            cd src
+            git checkout -b build refs/remotes/branch-heads/$(echo "${{ github.event.inputs.webrtc_branch }}" | sed 's|branch-heads/||')
+            cd ..
+            gclient sync --delete_unversioned_trees --jobs=4
+          fi
           df -h /
 
       - name: Install WebRTC build deps
