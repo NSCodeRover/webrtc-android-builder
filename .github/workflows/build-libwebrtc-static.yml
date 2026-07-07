@@ -85,11 +85,16 @@ jobs:
           sed -i 's/arflags = \[ "-T" \]/# arflags = [ "-T" ] # Disabled for portable .a/' build/config/BUILD.gn || true
 
       - name: Build libwebrtc.a for each ABI
-        env:
-          CHROMIUM_BUILDTOOLS_PATH: ${{ github.workspace }}/webrtc-build/src/buildtools
         run: |
           cd webrtc-build/src
-          export PATH=${{ github.workspace }}/depot_tools:$PATH
+
+          # Use WebRTC's bundled gn/ninja directly — bypasses depot_tools wrappers
+          GN=$(pwd)/buildtools/linux64/gn
+          NINJA=$(which ninja || echo "$(pwd)/third_party/ninja/ninja")
+          echo "Using gn: $GN ($(file $GN | cut -d: -f2))"
+          echo "Using ninja: $NINJA"
+          $GN --version
+
           IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
 
           for ARCH in "${ARCHS[@]}"; do
@@ -107,8 +112,8 @@ jobs:
               *) echo "Unknown arch: $ARCH"; exit 1 ;;
             esac
 
-            # Generate build
-            gn gen "out/$ARCH" --args="
+            # Generate build using bundled gn
+            $GN gen "out/$ARCH" --args="
               target_os=\"android\"
               target_cpu=\"$TARGET_CPU\"
               android_ndk_api_level=23
@@ -128,7 +133,7 @@ jobs:
             "
 
             # Build static library
-            ninja -C "out/$ARCH" webrtc
+            $NINJA -C "out/$ARCH" webrtc
 
             echo "Built: out/$ARCH/obj/libwebrtc.a"
             ls -lh "out/$ARCH/obj/libwebrtc.a"
