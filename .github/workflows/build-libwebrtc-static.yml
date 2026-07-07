@@ -24,12 +24,8 @@ jobs:
           BRANCH="${{ github.event.inputs.webrtc_branch }}"
           VERSION_RAW=$(curl -s "https://chromium.googlesource.com/chromium/src/+/${BRANCH}/chrome/VERSION?format=TEXT" | base64 -d)
           MAJOR=$(echo "$VERSION_RAW" | grep "MAJOR" | cut -d= -f2)
-          MINOR=$(echo "$VERSION_RAW" | grep "MINOR" | cut -d= -f2)
-          BUILD=$(echo "$VERSION_RAW" | grep "BUILD" | cut -d= -f2)
-          PATCH=$(echo "$VERSION_RAW" | grep "PATCH" | cut -d= -f2)
           echo "milestone=M${MAJOR}" >> $GITHUB_OUTPUT
-          echo "version=${MAJOR}.${MINOR}.${BUILD}.${PATCH}" >> $GITHUB_OUTPUT
-          echo "WebRTC version: M${MAJOR} (${MAJOR}.${MINOR}.${BUILD}.${PATCH})"
+          echo "WebRTC milestone: M${MAJOR}"
 
       - name: Free disk space
         run: |
@@ -44,34 +40,11 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq git python3 curl build-essential \
-            pkg-config libglib2.0-dev libgtk-3-dev lsb-release rsync ninja-build
+            pkg-config libglib2.0-dev libgtk-3-dev lsb-release rsync
 
       - name: Setup depot_tools
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          export PATH=${{ github.workspace }}/depot_tools:$PATH
-
-          # Force bootstrap and verify
-          cd depot_tools
-          ./ensure_bootstrap || true
-
-          # If python3_bin_reldir.txt is missing, create it manually
-          if [ ! -f python3_bin_reldir.txt ]; then
-            echo "python3_bin_reldir.txt missing after bootstrap — creating manually"
-            PYTHON3_PATH=$(which python3)
-            PYTHON3_DIR=$(dirname "$PYTHON3_PATH")
-            echo "$PYTHON3_DIR" > python3_bin_reldir.txt
-            ln -sf "$PYTHON3_PATH" python3
-            echo "Created python3_bin_reldir.txt pointing to: $(cat python3_bin_reldir.txt)"
-          fi
-
-          cat python3_bin_reldir.txt
-          ls -la python3_bin_reldir.txt
-          cd ..
-
-          # Verify gn works
-          depot_tools/gn --version
-
           echo "${{ github.workspace }}/depot_tools" >> $GITHUB_PATH
           echo "DEPOT_TOOLS_UPDATE=0" >> $GITHUB_ENV
 
@@ -80,9 +53,9 @@ jobs:
           mkdir webrtc-build && cd webrtc-build
           fetch --nohooks webrtc_android
           cd src
-          git checkout -b build_branch refs/remotes/branch-heads/${{ github.event.inputs.webrtc_branch == 'branch-heads/7339' && '7339' || '7339' }}
+          git checkout -b build refs/remotes/branch-heads/$(echo "${{ github.event.inputs.webrtc_branch }}" | sed 's|branch-heads/||')
           cd ..
-          gclient sync --delete_unversioned_trees --jobs=4 --verbose
+          gclient sync --delete_unversioned_trees --jobs=4
           df -h /
 
       - name: Install WebRTC build deps
@@ -90,67 +63,67 @@ jobs:
           cd webrtc-build/src
           ./build/install-build-deps.sh --no-prompt || true
 
-      - name: Patch for mediasoup compatibility
-        run: |
-          cd webrtc-build/src
-          # Disable thin archives for portable .a files
-          sed -i 's/arflags = \[ "-T" \]/# arflags = [ "-T" ]/' build/config/BUILD.gn || true
-
-      - name: Build libwebrtc.a for each ABI
+      - name: Build AAR (produces libwebrtc.a as intermediate)
         run: |
           cd webrtc-build/src
 
-          # Fix depot_tools python3_bin_reldir.txt — gclient sync hooks wipe it
-          DEPOT=${{ github.workspace }}/depot_tools
-          if [ ! -f "$DEPOT/python3_bin_reldir.txt" ]; then
-            echo "Recreating python3_bin_reldir.txt in depot_tools"
-            echo "$(dirname $(which python3))" > "$DEPOT/python3_bin_reldir.txt"
-            ln -sf $(which python3) "$DEPOT/python3"
-          fi
-          echo "python3_bin_reldir.txt: $(cat $DEPOT/python3_bin_reldir.txt)"
-          gn --version
-
+          # Build using build_aar.py — proven to work, produces .a as intermediate
           IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
-
+          ARCH_ARGS=""
           for ARCH in "${ARCHS[@]}"; do
             ARCH=$(echo "$ARCH" | xargs)
-            echo "========================================="
-            echo "Building for $ARCH"
-            echo "========================================="
-
-            case "$ARCH" in
-              arm64-v8a)   TARGET_CPU="arm64" ;;
-              armeabi-v7a) TARGET_CPU="arm" ;;
-              x86_64)      TARGET_CPU="x64" ;;
-              x86)         TARGET_CPU="x86" ;;
-              *) echo "Unknown arch: $ARCH"; exit 1 ;;
-            esac
-
-            BUILD_ARGS="target_os=\"android\" target_cpu=\"$TARGET_CPU\" android_ndk_api_level=23 is_debug=false is_component_build=false is_clang=true rtc_include_tests=false rtc_build_examples=false rtc_use_h264=true rtc_enable_protobuf=false use_custom_libcxx=false use_rtti=true use_errorprone_java_compiler=false treat_warnings_as_errors=false symbol_level=0 android_static_analysis=\"off\""
-
-            gn gen "out/$ARCH" --args="$BUILD_ARGS"
-            ninja -C "out/$ARCH" webrtc
-
-            echo "Built: out/$ARCH/obj/libwebrtc.a"
-            ls -lh "out/$ARCH/obj/libwebrtc.a"
-            df -h /
+            ARCH_ARGS="$ARCH_ARGS --arch $ARCH"
           done
 
-      - name: Package artifacts
+          python3 tools_webrtc/android/build_aar.py \
+            $ARCH_ARGS \
+            --build-dir out/android \
+            --output /tmp/libwebrtc.aar \
+            --extra-gn-args "is_debug=false is_component_build=false is_clang=true rtc_include_tests=false rtc_build_examples=false rtc_use_h264=true rtc_enable_protobuf=false use_custom_libcxx=false use_rtti=true treat_warnings_as_errors=false android_static_analysis=\"off\""
+
+          echo "AAR built successfully"
+          ls -lh /tmp/libwebrtc.aar
+          df -h /
+
+      - name: Extract libwebrtc.a from build output
         run: |
           cd webrtc-build/src
           MILESTONE="${{ steps.version.outputs.milestone }}"
 
           mkdir -p /tmp/libwebrtc-android-${MILESTONE}
 
+          # Find and copy libwebrtc.a for each ABI from build intermediates
           IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
           for ARCH in "${ARCHS[@]}"; do
             ARCH=$(echo "$ARCH" | xargs)
             mkdir -p /tmp/libwebrtc-android-${MILESTONE}/lib/${ARCH}
-            cp "out/${ARCH}/obj/libwebrtc.a" "/tmp/libwebrtc-android-${MILESTONE}/lib/${ARCH}/"
+
+            # build_aar.py creates output in out/android/{ABI}/obj/libwebrtc.a
+            if [ -f "out/android/${ARCH}/obj/libwebrtc.a" ]; then
+              cp "out/android/${ARCH}/obj/libwebrtc.a" "/tmp/libwebrtc-android-${MILESTONE}/lib/${ARCH}/"
+              echo "Copied libwebrtc.a for ${ARCH} ($(ls -lh out/android/${ARCH}/obj/libwebrtc.a | awk '{print $5}'))"
+            else
+              echo "Looking for libwebrtc.a in build output..."
+              find out/ -name "libwebrtc.a" -path "*${ARCH}*" 2>/dev/null
+              FOUND=$(find out/ -name "libwebrtc.a" -path "*${ARCH}*" -print -quit 2>/dev/null)
+              if [ -n "$FOUND" ]; then
+                cp "$FOUND" "/tmp/libwebrtc-android-${MILESTONE}/lib/${ARCH}/"
+                echo "Found and copied: $FOUND"
+              else
+                echo "ERROR: libwebrtc.a not found for ${ARCH}"
+              fi
+            fi
           done
 
-          # Copy headers for mediasoup
+          # Also extract classes.jar from the AAR
+          mkdir -p /tmp/aar-extract
+          unzip -o /tmp/libwebrtc.aar -d /tmp/aar-extract
+          if [ -f /tmp/aar-extract/classes.jar ]; then
+            cp /tmp/aar-extract/classes.jar /tmp/libwebrtc-android-${MILESTONE}/lib/libwebrtc.jar
+            echo "Extracted libwebrtc.jar from AAR"
+          fi
+
+          # Copy headers
           mkdir -p /tmp/libwebrtc-android-${MILESTONE}/include
           for DIR in api rtc_base p2p pc media modules call common_video logging system_wrappers; do
             rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
@@ -161,21 +134,21 @@ jobs:
           rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
             third_party/abseil-cpp/ /tmp/libwebrtc-android-${MILESTONE}/include/third_party/abseil-cpp/ 2>/dev/null || true
 
+          # Tarball
           cd /tmp
           tar czf libwebrtc-android-${MILESTONE}.tar.gz libwebrtc-android-${MILESTONE}/
           ls -lh libwebrtc-android-${MILESTONE}.tar.gz
 
-      - name: Upload artifacts
+      - name: Upload full package
         uses: actions/upload-artifact@v4
         with:
           name: libwebrtc-android-${{ steps.version.outputs.milestone }}
           path: /tmp/libwebrtc-android-${{ steps.version.outputs.milestone }}.tar.gz
           retention-days: 90
 
-      - name: Upload individual .a files
+      - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: libwebrtc-static-libs
-          path: |
-            webrtc-build/src/out/*/obj/libwebrtc.a
+          name: libwebrtc-aar
+          path: /tmp/libwebrtc.aar
           retention-days: 90
