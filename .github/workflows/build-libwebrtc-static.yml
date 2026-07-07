@@ -91,25 +91,27 @@ jobs:
 
           EXTRA_GN_ARGS="is_debug=false is_component_build=false is_clang=true rtc_include_tests=false rtc_build_examples=false rtc_use_h264=true rtc_enable_protobuf=false use_custom_libcxx=false use_rtti=true treat_warnings_as_errors=false android_static_analysis=\"off\" android_ndk_api_level=23"
 
-          # Step 1: Use build_aar.py ONLY to run gn gen (handles depot_tools/vpython3)
-          # It will fail on the .so link — that's fine, we only need gn gen
-          python3 tools_webrtc/android/build_aar.py \
-            $ARCH_ARGS \
-            --build-dir out/android \
-            --output /tmp/libwebrtc.aar \
-            --extra-gn-args "$EXTRA_GN_ARGS" \
-            || true
-
-          # Step 2: Now build the 'webrtc' target (produces libwebrtc.a)
-          # using the same siso/ninja that build_aar.py uses internally
           SISO=$(pwd)/third_party/siso/cipd/siso
 
+          # Process each ABI separately — build_aar.py stops at first failure
           for ARCH in "${ARCHS[@]}"; do
             ARCH=$(echo "$ARCH" | xargs)
             echo "========================================="
-            echo "Building libwebrtc.a for $ARCH"
+            echo "Processing $ARCH"
             echo "========================================="
 
+            # Step 1: Run build_aar.py for THIS arch only (runs gn gen + compiles .o files)
+            # Will fail on .so link — that's fine
+            python3 tools_webrtc/android/build_aar.py \
+              --arch $ARCH \
+              --build-dir out/android \
+              --output /tmp/libwebrtc-${ARCH}.aar \
+              --extra-gn-args "$EXTRA_GN_ARGS" \
+              || true
+
+            # Step 2: Build 'webrtc' target (produces libwebrtc.a)
+            # .o files are already compiled from step 1 — this just archives them
+            echo "Building libwebrtc.a for $ARCH..."
             if [ -f "$SISO" ]; then
               $SISO ninja -C "out/android/$ARCH" webrtc
             else
@@ -117,6 +119,7 @@ jobs:
             fi
 
             ls -lh "out/android/$ARCH/obj/libwebrtc.a"
+            echo "Done: $ARCH"
           done
 
           df -h /
