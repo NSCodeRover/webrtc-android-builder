@@ -70,12 +70,6 @@ jobs:
 
           IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
 
-          # Patch build_aar.py to build 'webrtc' target (produces correct libwebrtc.a)
-          # TARGETS is multi-line in M140, so use sed range replacement
-          sed -i '/^TARGETS = \[/,/^\]/c\TARGETS = ["webrtc"]' tools_webrtc/android/build_aar.py
-          echo "Patched TARGETS:"
-          grep "TARGETS" tools_webrtc/android/build_aar.py
-
           for ARCH in "${ARCHS[@]}"; do
             ARCH=$(echo "$ARCH" | xargs)
             echo "========================================="
@@ -84,20 +78,32 @@ jobs:
 
             # build_aar.py now builds 'webrtc' target → produces obj/libwebrtc.a directly
             # No .so link, no _Unwind issue, no duplicate JNI_OnLoad
-            # build_aar.py: gn gen + ninja webrtc succeed, but AAR packaging fails
-            # (no .so/.jar from 'webrtc' target) — that's fine, we only need the .a
+            # build_aar.py builds all submodules. The .so link fails (_Unwind) but
+            # all individual .a files are built before that step.
             python3 tools_webrtc/android/build_aar.py \
               --arch $ARCH \
               --build-dir out/build \
               --output /tmp/unused-${ARCH}.aar \
               --extra-gn-args "$EXTRA_GN_ARGS" || true
 
-            # Verify libwebrtc.a was produced by the 'webrtc' target
+            # Merge all individual .a files into a single libwebrtc.a
+            # (M140's 'webrtc' target is a group, not a static_library)
+            echo "Merging .a files into libwebrtc.a for $ARCH..."
+            LLVM_AR=$(find . -path "*/llvm-build/*/bin/llvm-ar" -type f | head -1)
+            AR_TOOL=${LLVM_AR:-ar}
+            mkdir -p /tmp/merge-${ARCH}
+            # Exclude SDK JNI wrappers that contain JNI_OnLoad (conflicts with our JNI code)
+            find "out/build/$ARCH/obj" -name "*.a" \
+              ! -name "libwebrtc.a" \
+              ! -path "*/sdk/android/libjingle_peerconnection_so*" \
+              | while read a; do
+              $AR_TOOL x "$a" --output="/tmp/merge-${ARCH}/" 2>/dev/null || true
+            done
+            OBJ_COUNT=$(ls /tmp/merge-${ARCH}/*.o 2>/dev/null | wc -l)
+            echo "Extracted $OBJ_COUNT objects from sub-libraries"
+            $AR_TOOL rcs "out/build/$ARCH/obj/libwebrtc.a" /tmp/merge-${ARCH}/*.o
+            rm -rf /tmp/merge-${ARCH}
             ls -lh "out/build/$ARCH/obj/libwebrtc.a"
-            if [ ! -f "out/build/$ARCH/obj/libwebrtc.a" ]; then
-              echo "ERROR: libwebrtc.a not found for $ARCH"
-              exit 1
-            fi
             ar t "out/build/$ARCH/obj/libwebrtc.a" | wc -l | xargs -I{} echo "Objects in archive: {}"
 
             # Save and clean for disk space
