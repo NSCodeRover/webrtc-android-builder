@@ -84,11 +84,16 @@ jobs:
               --output /tmp/unused-${ARCH}.aar \
               --extra-gn-args "$EXTRA_GN_ARGS" || true
 
-            # Step 2: Clean siso state so system ninja doesn't resume failed .so link
-            rm -rf "out/build/$ARCH/.siso"* "out/build/$ARCH/siso_"* "out/build/$ARCH/siso.INFO" 2>/dev/null || true
-
-            # Step 3: Build ONLY the 'webrtc' target = libwebrtc.a (static archive, no linking)
-            ninja -C "out/build/$ARCH" webrtc
+            # Step 2: Archive all .o files into libwebrtc.a directly (skip ninja entirely)
+            # All .o files are already compiled from step 1 — just bundle them
+            echo "Archiving .o files into libwebrtc.a for $ARCH..."
+            find "out/build/$ARCH/obj" -name "*.o" > /tmp/obj_files_${ARCH}.txt
+            OBJ_COUNT=$(wc -l < /tmp/obj_files_${ARCH}.txt)
+            echo "Found $OBJ_COUNT object files"
+            LLVM_AR=$(find . -path "*/llvm-build/*/bin/llvm-ar" -type f | head -1)
+            AR_TOOL=${LLVM_AR:-ar}
+            echo "Using archiver: $AR_TOOL"
+            cat /tmp/obj_files_${ARCH}.txt | xargs $AR_TOOL rcs "out/build/$ARCH/obj/libwebrtc.a"
             ls -lh "out/build/$ARCH/obj/libwebrtc.a"
 
             # Step 4: Save .a and clean intermediates to free disk for next ABI
