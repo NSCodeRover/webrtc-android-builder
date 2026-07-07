@@ -119,6 +119,12 @@ jobs:
             fi
 
             ls -lh "out/android/$ARCH/obj/libwebrtc.a"
+
+            # Save libwebrtc.a then clean build intermediates to free disk for next ABI
+            cp "out/android/$ARCH/obj/libwebrtc.a" "/tmp/libwebrtc-${ARCH}.a"
+            rm -rf "out/android/$ARCH/obj" "out/android/$ARCH/gen" "out/android/$ARCH/clang_x64"
+            echo "Cleaned intermediates for $ARCH — disk:"
+            df -h /
             echo "Done: $ARCH"
           done
 
@@ -137,30 +143,23 @@ jobs:
             ARCH=$(echo "$ARCH" | xargs)
             mkdir -p /tmp/libwebrtc-android-${MILESTONE}/lib/${ARCH}
 
-            # build_aar.py creates output in out/android/{ABI}/obj/libwebrtc.a
-            if [ -f "out/android/${ARCH}/obj/libwebrtc.a" ]; then
-              cp "out/android/${ARCH}/obj/libwebrtc.a" "/tmp/libwebrtc-android-${MILESTONE}/lib/${ARCH}/"
-              echo "Copied libwebrtc.a for ${ARCH} ($(ls -lh out/android/${ARCH}/obj/libwebrtc.a | awk '{print $5}'))"
-            else
-              echo "Looking for libwebrtc.a in build output..."
-              find out/ -name "libwebrtc.a" -path "*${ARCH}*" 2>/dev/null
-              FOUND=$(find out/ -name "libwebrtc.a" -path "*${ARCH}*" -print -quit 2>/dev/null)
-              if [ -n "$FOUND" ]; then
-                cp "$FOUND" "/tmp/libwebrtc-android-${MILESTONE}/lib/${ARCH}/"
-                echo "Found and copied: $FOUND"
-              else
-                echo "ERROR: libwebrtc.a not found for ${ARCH}"
+            # Use saved copy from build step (intermediates were cleaned for disk space)
+            cp "/tmp/libwebrtc-${ARCH}.a" "/tmp/libwebrtc-android-${MILESTONE}/lib/${ARCH}/libwebrtc.a"
+            echo "Copied libwebrtc.a for ${ARCH}"
+          done
+
+          # Extract classes.jar from any AAR that was partially built
+          for AAR in /tmp/libwebrtc-*.aar; do
+            if [ -f "$AAR" ]; then
+              mkdir -p /tmp/aar-extract
+              unzip -o "$AAR" classes.jar -d /tmp/aar-extract 2>/dev/null || true
+              if [ -f /tmp/aar-extract/classes.jar ]; then
+                cp /tmp/aar-extract/classes.jar /tmp/libwebrtc-android-${MILESTONE}/lib/libwebrtc.jar
+                echo "Extracted libwebrtc.jar"
+                break
               fi
             fi
           done
-
-          # Also extract classes.jar from the AAR
-          mkdir -p /tmp/aar-extract
-          unzip -o /tmp/libwebrtc.aar -d /tmp/aar-extract
-          if [ -f /tmp/aar-extract/classes.jar ]; then
-            cp /tmp/aar-extract/classes.jar /tmp/libwebrtc-android-${MILESTONE}/lib/libwebrtc.jar
-            echo "Extracted libwebrtc.jar from AAR"
-          fi
 
           # Copy headers
           mkdir -p /tmp/libwebrtc-android-${MILESTONE}/include
