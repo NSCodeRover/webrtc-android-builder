@@ -110,13 +110,12 @@ jobs:
               || true
 
             # Step 2: Build 'webrtc' target (produces libwebrtc.a)
-            # .o files are already compiled from step 1 — this just archives them
+            # Clear siso state so it doesn't resume the failed .so link
+            rm -rf "out/android/$ARCH/siso_output" "out/android/$ARCH/.siso"* 2>/dev/null || true
+
+            # Use system ninja (not siso) to build ONLY the webrtc static library
             echo "Building libwebrtc.a for $ARCH..."
-            if [ -f "$SISO" ]; then
-              $SISO ninja -C "out/android/$ARCH" webrtc
-            else
-              ninja -C "out/android/$ARCH" webrtc
-            fi
+            ninja -C "out/android/$ARCH" webrtc
 
             ls -lh "out/android/$ARCH/obj/libwebrtc.a"
 
