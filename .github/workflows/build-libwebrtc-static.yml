@@ -92,33 +92,15 @@ jobs:
           echo "Patch 2: libunwind visibility added"
 
           # 3. Link libunwind when custom libcxx is disabled
-          # Write a Python patch script to a file (avoids YAML quoting issues)
-          cat > /tmp/patch_unwind.py << 'PYEOF'
-          import sys
-          filepath = sys.argv[1]
-          with open(filepath, 'r') as f:
-              lines = f.readlines()
-          patched = False
-          new_lines = []
-          for i, line in enumerate(lines):
-              new_lines.append(line)
-              if 'use_custom_libcxx' in line and 'if (' in line:
-                  for j in range(i+1, min(i+5, len(lines))):
-                      if 'libc++' in lines[j] and 'public_deps' in lines[j]:
-                          for k in range(j+1, min(j+3, len(lines))):
-                              if lines[k].strip() == '}':
-                                  lines[k] = lines[k].rstrip() + ' else {\n      public_deps += [ "//buildtools/third_party/libunwind" ]\n    }\n'
-                                  patched = True
-                                  break
-                          break
-          if patched:
-              with open(filepath, 'w') as f:
-                  f.writelines(lines)
-              print('Patched: libunwind linked for non-custom-libcxx')
-          else:
-              print('WARNING: Could not auto-patch libunwind')
-          PYEOF
-          python3 /tmp/patch_unwind.py build/config/BUILD.gn
+          # Use sed to add else branch after the use_custom_libcxx block
+          sed -i '/if (use_custom_libcxx) {/{
+            n
+            /public_deps.*libc++/{
+              n
+              s/}/} else {\n      public_deps += [ "\/\/buildtools\/third_party\/libunwind" ]\n    }/
+            }
+          }' build/config/BUILD.gn 2>/dev/null && echo "Patch 3: libunwind linked" || echo "Patch 3: sed failed, trying alternative"
+          grep -A3 "use_custom_libcxx" build/config/BUILD.gn | head -8
           echo "All patches applied"
 
       - name: Build AAR (produces libwebrtc.a as intermediate)
