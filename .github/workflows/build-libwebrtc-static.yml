@@ -99,6 +99,17 @@ jobs:
       - name: Build libwebrtc.a for each ABI
         run: |
           cd webrtc-build/src
+
+          # Fix depot_tools python3_bin_reldir.txt — gclient sync hooks wipe it
+          DEPOT=${{ github.workspace }}/depot_tools
+          if [ ! -f "$DEPOT/python3_bin_reldir.txt" ]; then
+            echo "Recreating python3_bin_reldir.txt in depot_tools"
+            echo "$(dirname $(which python3))" > "$DEPOT/python3_bin_reldir.txt"
+            ln -sf $(which python3) "$DEPOT/python3"
+          fi
+          echo "python3_bin_reldir.txt: $(cat $DEPOT/python3_bin_reldir.txt)"
+          gn --version
+
           IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
 
           for ARCH in "${ARCHS[@]}"; do
