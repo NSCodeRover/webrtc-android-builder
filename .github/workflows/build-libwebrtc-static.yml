@@ -88,11 +88,26 @@ jobs:
         run: |
           cd webrtc-build/src
 
-          # Use WebRTC's bundled gn/ninja directly — bypasses depot_tools wrappers
+          # Ensure depot_tools python is available for gn's exec_script() calls
+          export PATH=${{ github.workspace }}/depot_tools:$PATH
+          export DEPOT_TOOLS_UPDATE=0
+          export VPYTHON_BYPASS="manually managed python not in path"
+
+          # Create vpython3 symlink if depot_tools one is broken
+          if ! command -v vpython3 &>/dev/null; then
+            sudo ln -sf $(which python3) /usr/local/bin/vpython3
+          fi
+
+          # Re-bootstrap depot_tools if needed
+          ${{ github.workspace }}/depot_tools/ensure_bootstrap || true
+
+          # Use WebRTC's bundled gn binary directly
           GN=$(pwd)/buildtools/linux64/gn
           NINJA=$(which ninja || echo "$(pwd)/third_party/ninja/ninja")
-          echo "Using gn: $GN ($(file $GN | cut -d: -f2))"
+          echo "Using gn: $GN"
           echo "Using ninja: $NINJA"
+          echo "vpython3: $(which vpython3)"
+          echo "python3: $(which python3)"
           $GN --version
 
           IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
