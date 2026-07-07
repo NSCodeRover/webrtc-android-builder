@@ -87,9 +87,9 @@ jobs:
           echo "Patch 1: thin archives disabled"
 
           # 2. Fix _Unwind_Backtrace linker error when use_custom_libcxx=false
-          # Add visibility for libunwind
-          sed -i '/source_set("libunwind") {/a\  visibility = [ "//build/config:common_deps", "//buildtools/third_party/libc++" ]' buildtools/third_party/libunwind/BUILD.gn 2>/dev/null || true
-          echo "Patch 2: libunwind visibility added"
+          # Replace existing visibility to include build/config:common_deps
+          sed -i 's|visibility = \[ "//buildtools/third_party/libc++abi" \]|visibility = [ "//build/config:common_deps", "//buildtools/third_party/libc++", "//buildtools/third_party/libc++abi" ]|' buildtools/third_party/libunwind/BUILD.gn 2>/dev/null || true
+          echo "Patch 2: libunwind visibility updated"
 
           # 3. Link libunwind when custom libcxx is disabled
           # Use sed to add else branch after the use_custom_libcxx block
