@@ -88,37 +88,24 @@ jobs:
 
             # Merge all individual .a files into a single libwebrtc.a
             # (M140's 'webrtc' target is a group, not a static_library)
-            echo "Merging .a files into libwebrtc.a for $ARCH..."
+            # Archive .o files directly (thin archives can't be extracted with ar x)
+            echo "Archiving .o files into libwebrtc.a for $ARCH..."
             LLVM_AR=$(find "$(pwd)" -path "*/llvm-build/*/bin/llvm-ar" -type f | head -1)
             AR_TOOL=${LLVM_AR:-ar}
-            BUILD_ABS="$(pwd)/out/build/$ARCH"
-            MERGE_DIR="/tmp/merge-${ARCH}"
-            rm -rf "$MERGE_DIR" && mkdir -p "$MERGE_DIR"
 
-            # Extract .o from each .a using absolute paths
-            IDX=0
-            find "$BUILD_ABS/obj" -name "*.a" \
-              ! -name "libwebrtc.a" \
-              ! -path "*/libjingle_peerconnection_so*" \
-              > /tmp/alist-${ARCH}.txt
-            echo "Found $(wc -l < /tmp/alist-${ARCH}.txt) .a files to merge"
+            # Find all .o files, excluding: host tools, jni_onload (duplicate with our JNI)
+            find "$(pwd)/out/build/$ARCH/obj" -name "*.o" \
+              ! -name "jni_onload.o" \
+              ! -path "*/clang_x64/*" \
+              > /tmp/obj_list_${ARCH}.txt
 
-            while IFS= read -r AFILE; do
-              SUBDIR="$MERGE_DIR/$IDX"
-              mkdir -p "$SUBDIR"
-              cd "$SUBDIR"
-              "$AR_TOOL" x "$AFILE"
-              cd "$BUILD_ABS/.."
-              IDX=$((IDX + 1))
-            done < /tmp/alist-${ARCH}.txt
+            OBJ_COUNT=$(wc -l < /tmp/obj_list_${ARCH}.txt)
+            echo "Found $OBJ_COUNT object files"
 
-            # Count and merge
-            OBJ_COUNT=$(find "$MERGE_DIR" -name "*.o" | wc -l)
-            echo "Extracted $OBJ_COUNT objects from sub-libraries"
-            find "$MERGE_DIR" -name "*.o" | sort | xargs "$AR_TOOL" rcs "$BUILD_ABS/obj/libwebrtc.a"
-            rm -rf "$MERGE_DIR"
-            ls -lh "$BUILD_ABS/obj/libwebrtc.a"
-            echo "Objects in archive: $("$AR_TOOL" t "$BUILD_ABS/obj/libwebrtc.a" | wc -l)"
+            # Use xargs to avoid ARG_MAX
+            cat /tmp/obj_list_${ARCH}.txt | xargs "$AR_TOOL" rcs "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
+            ls -lh "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
+            echo "Objects in archive: $("$AR_TOOL" t "$(pwd)/out/build/$ARCH/obj/libwebrtc.a" | wc -l)"
             ar t "out/build/$ARCH/obj/libwebrtc.a" | wc -l | xargs -I{} echo "Objects in archive: {}"
 
             # Save and clean for disk space
