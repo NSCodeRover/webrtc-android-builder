@@ -70,6 +70,10 @@ jobs:
           sed -i 's/use_custom_libcxx = true/use_custom_libcxx = false/' build/config/c++/BUILD.gn 2>/dev/null || true
           echo "Patch 1: STL → NDK libc++"
 
+          # 1b. Disable thin archives — thin .a files are just path indexes, not portable
+          sed -i 's/arflags = \[ "-T" \]/# arflags = [ "-T" ]/' build/config/compiler/BUILD.gn 2>/dev/null || true
+          echo "Patch 1b: thin archives disabled"
+
           # 2. libunwind: fix _Unwind_Backtrace for .so link
           # Replace visibility to allow libunwind from build/config
           sed -i 's|visibility = \[ "//buildtools/third_party/libc++abi" \]|visibility = [ "//build/config:common_deps", "//buildtools/third_party/libc++", "//buildtools/third_party/libc++abi" ]|' buildtools/third_party/libunwind/BUILD.gn 2>/dev/null || true
