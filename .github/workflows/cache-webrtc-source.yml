@@ -1,0 +1,59 @@
+name: Cache WebRTC Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      webrtc_branch:
+        description: 'WebRTC branch'
+        required: true
+        default: 'branch-heads/7339'
+
+jobs:
+  cache:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo docker system prune -af 2>/dev/null || true
+          df -h /
+
+      - name: Setup depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          echo "${{ github.workspace }}/depot_tools" >> $GITHUB_PATH
+          echo "DEPOT_TOOLS_UPDATE=0" >> $GITHUB_ENV
+
+      - name: Fetch WebRTC source
+        run: |
+          mkdir webrtc-build && cd webrtc-build
+          fetch --nohooks webrtc_android
+          BRANCH_NUM=$(echo "${{ github.event.inputs.webrtc_branch }}" | sed 's|branch-heads/||')
+          cd src && git checkout -b build refs/remotes/branch-heads/${BRANCH_NUM} && cd ..
+          gclient sync --delete_unversioned_trees --jobs=4
+          df -h /
+
+      - name: Install build deps
+        run: |
+          cd webrtc-build/src
+          ./build/install-build-deps.sh --no-prompt || true
+
+      - name: Package source
+        run: |
+          echo "Compressing WebRTC source..."
+          tar czf /tmp/webrtc-source-m140.tar.gz \
+            --exclude='webrtc-build/src/out' \
+            --exclude='*.pyc' \
+            --exclude='webrtc-build/src/testing/gmock' \
+            --exclude='webrtc-build/src/testing/gtest' \
+            webrtc-build/
+          ls -lh /tmp/webrtc-source-m140.tar.gz
+
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webrtc-source-m140
+          path: /tmp/webrtc-source-m140.tar.gz
+          retention-days: 90
