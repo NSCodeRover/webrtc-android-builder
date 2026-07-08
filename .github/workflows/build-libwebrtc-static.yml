@@ -62,6 +62,12 @@ jobs:
           cd webrtc-build/src
           ./build/install-build-deps.sh --no-prompt || true
 
+      - name: Patch STL to use NDK libc++
+        run: |
+          cd webrtc-build/src
+          sed -i "s/use_custom_libcxx = true/use_custom_libcxx = false/" build/config/c++/BUILD.gn 2>/dev/null || true
+          echo "STL patch applied"
+
       - name: Build libwebrtc.a
         run: |
           cd webrtc-build/src
