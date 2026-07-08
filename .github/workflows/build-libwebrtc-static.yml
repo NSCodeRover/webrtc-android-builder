@@ -119,27 +119,22 @@ jobs:
               ninja -C "$(pwd)/out/build/$ARCH" webrtc || true
             fi
 
-            # Merge all individual .a files into a single libwebrtc.a
-            # (M140's 'webrtc' target is a group, not a static_library)
-            # Archive .o files directly (thin archives can't be extracted with ar x)
-            echo "Archiving .o files into libwebrtc.a for $ARCH..."
-            LLVM_AR=$(find "$(pwd)" -path "*/llvm-build/*/bin/llvm-ar" -type f | head -1)
-            AR_TOOL=${LLVM_AR:-ar}
-
-            # Find all .o files, excluding: host tools, jni_onload (duplicate with our JNI)
-            find "$(pwd)/out/build/$ARCH/obj" -name "*.o" \
-              ! -name "jni_onload.o" \
-              ! -path "*/clang_x64/*" \
-              > /tmp/obj_list_${ARCH}.txt
-
-            OBJ_COUNT=$(wc -l < /tmp/obj_list_${ARCH}.txt)
-            echo "Found $OBJ_COUNT object files"
-
-            # Use xargs to avoid ARG_MAX
-            cat /tmp/obj_list_${ARCH}.txt | xargs "$AR_TOOL" rcs "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
-            ls -lh "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
-            echo "Objects in archive: $("$AR_TOOL" t "$(pwd)/out/build/$ARCH/obj/libwebrtc.a" | wc -l)"
-            ar t "out/build/$ARCH/obj/libwebrtc.a" | wc -l | xargs -I{} echo "Objects in archive: {}"
+            # Use libwebrtc.a produced by ninja webrtc (rtc_static_library target)
+            # If ninja produced it, it has ALL the right objects — don't overwrite with find|ar
+            if [ -f "$(pwd)/out/build/$ARCH/obj/libwebrtc.a" ]; then
+              echo "ninja webrtc produced libwebrtc.a — using it directly"
+              ls -lh "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
+            else
+              echo "No libwebrtc.a from ninja — falling back to find .o | ar"
+              LLVM_AR=$(find "$(pwd)" -path "*/llvm-build/*/bin/llvm-ar" -type f | head -1)
+              AR_TOOL=${LLVM_AR:-ar}
+              find "$(pwd)/out/build/$ARCH/obj" -name "*.o" \
+                ! -name "jni_onload.o" ! -path "*/clang_x64/*" \
+                > /tmp/obj_list_${ARCH}.txt
+              echo "Found $(wc -l < /tmp/obj_list_${ARCH}.txt) object files"
+              cat /tmp/obj_list_${ARCH}.txt | xargs "$AR_TOOL" rcs "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
+              ls -lh "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
+            fi
 
             # Save and clean for disk space
             cp "out/build/$ARCH/obj/libwebrtc.a" "/tmp/libwebrtc-${ARCH}.a"
@@ -164,7 +159,7 @@ jobs:
 
           # Headers
           mkdir -p /tmp/pkg/include
-          for DIR in api rtc_base p2p pc media modules call common_video logging system_wrappers sdk/android third_party/abseil-cpp; do
+          for DIR in api rtc_base p2p pc media modules call common_video logging system_wrappers sdk/android third_party/abseil-cpp third_party/jni_zero; do
             if [ -d "$DIR" ]; then
               rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
                 "$DIR/" "/tmp/pkg/include/$DIR/" 2>/dev/null || true
