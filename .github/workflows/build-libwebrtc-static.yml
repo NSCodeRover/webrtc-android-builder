@@ -62,11 +62,26 @@ jobs:
           cd webrtc-build/src
           ./build/install-build-deps.sh --no-prompt || true
 
-      - name: Patch STL to use NDK libc++
+      - name: Patch for NDK compatibility
         run: |
           cd webrtc-build/src
-          sed -i "s/use_custom_libcxx = true/use_custom_libcxx = false/" build/config/c++/BUILD.gn 2>/dev/null || true
-          echo "STL patch applied"
+
+          # 1. STL: force NDK libc++ (std::__ndk1::) not Chromium libc++ (std::__cr::)
+          sed -i 's/use_custom_libcxx = true/use_custom_libcxx = false/' build/config/c++/BUILD.gn 2>/dev/null || true
+          echo "Patch 1: STL → NDK libc++"
+
+          # 2. libunwind: fix _Unwind_Backtrace for .so link
+          # Replace visibility to allow libunwind from build/config
+          sed -i 's|visibility = \[ "//buildtools/third_party/libc++abi" \]|visibility = [ "//build/config:common_deps", "//buildtools/third_party/libc++", "//buildtools/third_party/libc++abi" ]|' buildtools/third_party/libunwind/BUILD.gn 2>/dev/null || true
+          echo "Patch 2: libunwind visibility"
+
+          # 3. Link libunwind when custom libcxx is disabled
+          if ! grep -q "libunwind" build/config/BUILD.gn; then
+            sed -i '/if (use_custom_libcxx) {/{n;/public_deps.*libc++/{n;s/}/} else {\n      public_deps += [ "\/\/buildtools\/third_party\/libunwind" ]\n    }/}}' build/config/BUILD.gn 2>/dev/null || true
+          fi
+          echo "Patch 3: link libunwind"
+
+          echo "All patches applied"
 
       - name: Build libwebrtc.a
         run: |
