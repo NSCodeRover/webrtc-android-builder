@@ -101,11 +101,23 @@ jobs:
             # No .so link, no _Unwind issue, no duplicate JNI_OnLoad
             # build_aar.py builds all submodules. The .so link fails (_Unwind) but
             # all individual .a files are built before that step.
+            # Step A: build_aar.py for gn gen + partial compile (~3085 objects)
             python3 tools_webrtc/android/build_aar.py \
               --arch $ARCH \
               --build-dir out/build \
               --output /tmp/unused-${ARCH}.aar \
               --extra-gn-args "$EXTRA_GN_ARGS" || true
+
+            # Step B: ninja webrtc to compile REMAINING objects (~500 more)
+            # build_aar.py only compiles targets for .so/.jar
+            # 'webrtc' group depends on MORE targets (logging, AudioState, AV1, etc.)
+            # ninja reuses already-compiled objects, only builds what's missing
+            SISO=$(find "$(pwd)" -path "*/siso/cipd/siso" -type f | head -1)
+            if [ -n "$SISO" ]; then
+              "$SISO" ninja -C "$(pwd)/out/build/$ARCH" webrtc || true
+            else
+              ninja -C "$(pwd)/out/build/$ARCH" webrtc || true
+            fi
 
             # Merge all individual .a files into a single libwebrtc.a
             # (M140's 'webrtc' target is a group, not a static_library)
