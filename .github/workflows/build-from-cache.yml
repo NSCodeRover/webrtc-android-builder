@@ -53,6 +53,15 @@ jobs:
           echo "${{ github.workspace }}/depot_tools" >> $GITHUB_PATH
           echo "DEPOT_TOOLS_UPDATE=0" >> $GITHUB_ENV
 
+      - name: Patch STL to use NDK libc++
+        run: |
+          cd webrtc-build/src
+          # Force use_custom_libcxx=false at the build config level
+          # This ensures ALL targets use NDK's std::__ndk1:: not Chromium's std::__cr::
+          sed -i 's/use_custom_libcxx = true/use_custom_libcxx = false/' build/config/c++/BUILD.gn 2>/dev/null || true
+          sed -i 's/use_custom_libcxx=true/use_custom_libcxx=false/' build/config/c++/BUILD.gn 2>/dev/null || true
+          echo "STL patch applied"
+
       - name: Build libwebrtc.a
         run: |
           cd webrtc-build/src
