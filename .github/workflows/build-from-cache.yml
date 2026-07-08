@@ -1,0 +1,123 @@
+name: Build libwebrtc.a (from cached source)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'Run ID of "Cache WebRTC Source" workflow to download from'
+        required: true
+      target_arch:
+        description: 'Target architectures (comma-separated)'
+        required: true
+        default: 'armeabi-v7a,arm64-v8a'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo rm -rf /usr/local/share/boost /usr/local/graalvm /usr/local/share/powershell
+          sudo docker system prune -af 2>/dev/null || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git python3 curl build-essential \
+            pkg-config libglib2.0-dev libgtk-3-dev lsb-release ninja-build
+
+      - name: Download cached source
+        uses: actions/download-artifact@v4
+        with:
+          name: webrtc-source-m140
+          run-id: ${{ github.event.inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract source
+        run: |
+          echo "Extracting cached WebRTC source..."
+          tar xzf webrtc-source-m140.tar.gz
+          rm webrtc-source-m140.tar.gz
+          echo "Source ready"
+          ls webrtc-build/src/BUILD.gn && echo "BUILD.gn found"
+          df -h /
+
+      - name: Setup depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          echo "${{ github.workspace }}/depot_tools" >> $GITHUB_PATH
+          echo "DEPOT_TOOLS_UPDATE=0" >> $GITHUB_ENV
+
+      - name: Build libwebrtc.a
+        run: |
+          cd webrtc-build/src
+
+          EXTRA_GN_ARGS='is_debug=false is_component_build=false is_clang=true rtc_include_tests=false rtc_build_examples=false rtc_use_h264=true rtc_enable_protobuf=false use_custom_libcxx=false use_rtti=true treat_warnings_as_errors=false android_static_analysis="off" android_ndk_api_level=23'
+
+          IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
+
+          for ARCH in "${ARCHS[@]}"; do
+            ARCH=$(echo "$ARCH" | xargs)
+            echo "========================================="
+            echo "Building $ARCH"
+            echo "========================================="
+
+            python3 tools_webrtc/android/build_aar.py \
+              --arch $ARCH \
+              --build-dir out/build \
+              --output /tmp/unused-${ARCH}.aar \
+              --extra-gn-args "$EXTRA_GN_ARGS" || true
+
+            # Archive .o files directly (thin archives can't be extracted)
+            echo "Archiving .o files for $ARCH..."
+            LLVM_AR=$(find "$(pwd)" -path "*/llvm-build/*/bin/llvm-ar" -type f | head -1)
+            AR_TOOL=${LLVM_AR:-ar}
+
+            find "$(pwd)/out/build/$ARCH/obj" -name "*.o" \
+              ! -name "jni_onload.o" \
+              ! -path "*/clang_x64/*" \
+              > /tmp/obj_list_${ARCH}.txt
+
+            echo "Found $(wc -l < /tmp/obj_list_${ARCH}.txt) object files"
+            cat /tmp/obj_list_${ARCH}.txt | xargs "$AR_TOOL" rcs "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
+            ls -lh "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
+
+            cp "$(pwd)/out/build/$ARCH/obj/libwebrtc.a" "/tmp/libwebrtc-${ARCH}.a"
+            rm -rf "out/build/$ARCH/obj" "out/build/$ARCH/gen" "out/build/$ARCH/clang_x64" 2>/dev/null || true
+            df -h /
+          done
+
+      - name: Package
+        run: |
+          cd webrtc-build/src
+          mkdir -p /tmp/pkg/lib
+
+          IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
+          for ARCH in "${ARCHS[@]}"; do
+            ARCH=$(echo "$ARCH" | xargs)
+            mkdir -p "/tmp/pkg/lib/${ARCH}"
+            cp "/tmp/libwebrtc-${ARCH}.a" "/tmp/pkg/lib/${ARCH}/libwebrtc.a"
+          done
+
+          mkdir -p /tmp/pkg/include
+          for DIR in api rtc_base p2p pc media modules call common_video logging system_wrappers sdk/android third_party/abseil-cpp third_party/jni_zero; do
+            if [ -d "$DIR" ]; then
+              rsync -a --include='*/' --include='*.h' --include='*.hpp' --exclude='*' \
+                "$DIR/" "/tmp/pkg/include/$DIR/" 2>/dev/null || true
+            fi
+          done
+
+          cd /tmp && tar czf libwebrtc-android-M140-cached.tar.gz pkg/
+          ls -lh libwebrtc-android-M140-cached.tar.gz
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: libwebrtc-android-M140
+          path: /tmp/libwebrtc-android-M140-cached.tar.gz
+          retention-days: 90
