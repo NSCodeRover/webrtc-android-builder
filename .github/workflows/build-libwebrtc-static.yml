@@ -87,8 +87,8 @@ jobs:
 
           # 4. Fix audio crash on devices reporting 0 Hz sample rate (OnePlus etc.)
           # Change RTC_CHECK to fallback instead of crash
-          sed -i 's/RTC_CHECK(output_parameters->is_valid());/if (!output_parameters->is_valid()) { output_parameters->reset(48000, 1, 960); }/' sdk/android/src/jni/audio_device/audio_device_module.cc 2>/dev/null || true
-          sed -i 's/RTC_CHECK(input_parameters->is_valid());/if (!input_parameters->is_valid()) { input_parameters->reset(48000, 1, 960); }/' sdk/android/src/jni/audio_device/audio_device_module.cc 2>/dev/null || true
+          sed -i 's/RTC_CHECK(output_parameters->is_valid());/if (!output_parameters->is_valid()) { output_parameters->reset(48000, static_cast<size_t>(1), static_cast<size_t>(960)); }/' sdk/android/src/jni/audio_device/audio_device_module.cc 2>/dev/null || true
+          sed -i 's/RTC_CHECK(input_parameters->is_valid());/if (!input_parameters->is_valid()) { input_parameters->reset(48000, static_cast<size_t>(1), static_cast<size_t>(960)); }/' sdk/android/src/jni/audio_device/audio_device_module.cc 2>/dev/null || true
           echo "Patch 4: audio 0 Hz fallback (OnePlus fix)"
 
           echo "All patches applied"
