@@ -133,8 +133,10 @@ jobs:
               --output /tmp/unused-${ARCH}.aar \
               --extra-gn-args "$EXTRA_GN_ARGS" || true
 
-            # Step B: ninja webrtc — use ninja directly (not siso) to avoid remote exec issues
-            ninja -C "$(pwd)/out/build/$ARCH" webrtc || true
+            # Step B: build remaining targets — build_aar.py uses siso, so use autoninja
+            # (bare ninja rejects siso state files left by build_aar.py)
+            rm -f "$(pwd)/out/build/$ARCH/.sisoenv" 2>/dev/null || true
+            /usr/bin/ninja -C "$(pwd)/out/build/$ARCH" webrtc 2>/dev/null || true
 
             # Collect ALL objects: bare .o files + objects inside nested .a archives
             # rtc_library() produces static_library (.a) not source_set (.o),
@@ -196,16 +198,13 @@ jobs:
             echo "Packaged $ARCH"
           done
 
-          # Jar — build_aar.py produces libwebrtc.jar before the .so link (which may fail)
-          # The jar contains M140 Java classes needed for JNI compatibility
-          FIRST_ARCH=$(echo "${{ github.event.inputs.target_arch }}" | cut -d, -f1 | xargs)
-          JAR_PATH="out/build/${FIRST_ARCH}/lib.java/sdk/android/libwebrtc.jar"
-          if [ -f "$JAR_PATH" ]; then
-            cp "$JAR_PATH" /tmp/pkg/lib/libwebrtc.jar
-            echo "Packaged libwebrtc.jar"
+          # Jar — build_aar.py produces libwebrtc.jar (M140 Java classes for JNI compat)
+          JAR=$(find out/build -name "libwebrtc.jar" -type f 2>/dev/null | head -1)
+          if [ -n "$JAR" ]; then
+            cp "$JAR" /tmp/pkg/lib/libwebrtc.jar
+            echo "Packaged libwebrtc.jar from $JAR"
           else
-            echo "WARNING: libwebrtc.jar not found at $JAR_PATH"
-            find out/build -name "libwebrtc.jar" 2>/dev/null | head -3
+            echo "WARNING: libwebrtc.jar not found"
           fi
 
           # Headers
