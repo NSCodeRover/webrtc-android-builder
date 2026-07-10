@@ -138,44 +138,37 @@ jobs:
             rm -f "$(pwd)/out/build/$ARCH/.sisoenv" 2>/dev/null || true
             /usr/bin/ninja -C "$(pwd)/out/build/$ARCH" webrtc 2>/dev/null || true
 
-            # Collect ALL objects: bare .o files + objects inside nested .a archives
-            # rtc_library() produces static_library (.a) not source_set (.o),
-            # so find .o alone misses logging.o, socket.o, rtc_certificate.o etc.
-            LLVM_AR=$(find "$(pwd)" -path "*/llvm-build/*/bin/llvm-ar" -type f | head -1)
+            # Use ninja's libwebrtc.a if available (complete_static_lib=true)
+            # Otherwise fall back to find .o | ar
+            LLVM_AR=$(find "$(pwd)" -path "*/llvm-build/*/bin/llvm-ar" -type f 2>/dev/null | head -1)
             AR_TOOL=${LLVM_AR:-ar}
             BUILD_OBJ="$(pwd)/out/build/$ARCH/obj"
-            EXTRACT_DIR="/tmp/extracted_objs_${ARCH}"
-            rm -rf "$EXTRACT_DIR" && mkdir -p "$EXTRACT_DIR"
 
-            # Extract objects from ALL nested .a files (except libwebrtc.a itself)
-            find "$BUILD_OBJ" -name "*.a" ! -name "libwebrtc.a" ! -path "*/clang_x64/*" | while read archive; do
-              SUBDIR="$EXTRACT_DIR/$(echo "$archive" | md5sum | cut -c1-8)"
-              mkdir -p "$SUBDIR"
-              cd "$SUBDIR" && "$AR_TOOL" x "$archive" 2>/dev/null
-            done
+            if [ -f "$BUILD_OBJ/libwebrtc.a" ]; then
+              echo "Using ninja-produced libwebrtc.a"
+            else
+              echo "No ninja libwebrtc.a — collecting objects manually"
+              find "$BUILD_OBJ" -name "*.o" ! -name "jni_onload.o" ! -path "*/clang_x64/*" \
+                > /tmp/obj_list_${ARCH}.txt 2>/dev/null
+              OBJ_COUNT=$(wc -l < /tmp/obj_list_${ARCH}.txt)
+              echo "Found $OBJ_COUNT bare .o files"
+              "$AR_TOOL" rcs "$BUILD_OBJ/libwebrtc.a" $(cat /tmp/obj_list_${ARCH}.txt) 2>/dev/null || true
+            fi
 
-            # Combine: bare .o files + extracted .o files from nested archives
-            find "$BUILD_OBJ" -name "*.o" ! -name "jni_onload.o" ! -path "*/clang_x64/*" > /tmp/obj_list_${ARCH}.txt
-            find "$EXTRACT_DIR" -name "*.o" ! -name "jni_onload.o" >> /tmp/obj_list_${ARCH}.txt
-            OBJ_COUNT=$(wc -l < /tmp/obj_list_${ARCH}.txt)
-            echo "Found $OBJ_COUNT object files (bare + extracted from .a)"
-            rm -f "$BUILD_OBJ/libwebrtc.a"
-            cat /tmp/obj_list_${ARCH}.txt | xargs "$AR_TOOL" rcs "$BUILD_OBJ/libwebrtc.a"
-
-            # Compile and add perfetto stubs
-            CLANG=$(find "$(pwd)" -path "*/llvm-build/*/bin/clang++" -type f | head -1)
+            # Add perfetto stubs
+            CLANG=$(find "$(pwd)" -path "*/llvm-build/*/bin/clang++" -type f 2>/dev/null | head -1)
             if [ -n "$CLANG" ]; then
-              NDK_SYSROOT=$(find "$(pwd)" -path "*/ndk/*/sysroot" -type d | head -1)
+              NDK_SYSROOT=$(find "$(pwd)" -path "*/ndk/*/sysroot" -type d 2>/dev/null | head -1)
               case "$ARCH" in
                 arm64-v8a) TARGET="aarch64-linux-android23" ;;
                 armeabi-v7a) TARGET="armv7a-linux-androideabi23" ;;
               esac
               "$CLANG" --target=$TARGET --sysroot="$NDK_SYSROOT" -c -std=c++20 \
-                -o /tmp/perfetto_stubs_${ARCH}.o /tmp/perfetto_stubs.cc
-              "$AR_TOOL" rcs "$(pwd)/out/build/$ARCH/obj/libwebrtc.a" /tmp/perfetto_stubs_${ARCH}.o
-              echo "Added perfetto stubs to archive"
+                -o /tmp/perfetto_stubs_${ARCH}.o /tmp/perfetto_stubs.cc 2>/dev/null
+              "$AR_TOOL" rcs "$BUILD_OBJ/libwebrtc.a" /tmp/perfetto_stubs_${ARCH}.o
+              echo "Added perfetto stubs"
             fi
-            ls -lh "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
+            ls -lh "$BUILD_OBJ/libwebrtc.a"
 
             # Save and clean for disk space
             cp "out/build/$ARCH/obj/libwebrtc.a" "/tmp/libwebrtc-${ARCH}.a"
