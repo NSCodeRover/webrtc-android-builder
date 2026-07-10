@@ -91,13 +91,28 @@ jobs:
           sed -i 's/RTC_CHECK(input_parameters->is_valid());/if (!input_parameters->is_valid()) { input_parameters->reset(48000, static_cast<size_t>(1), static_cast<size_t>(960)); }/' sdk/android/src/jni/audio_device/audio_device_module.cc 2>/dev/null || true
           echo "Patch 4: audio 0 Hz fallback (OnePlus fix)"
 
+          # 5. Create perfetto base stubs for symbols not built by WebRTC
+          cat > /tmp/perfetto_stubs.cc << 'STUBEOF'
+          #include <cstddef>
+          #include <unistd.h>
+          namespace perfetto { namespace base { namespace internal {
+            size_t g_cached_page_size = 0;
+            size_t GetSysPageSizeSlowpath() {
+              long sz = sysconf(_SC_PAGESIZE);
+              g_cached_page_size = (sz > 0) ? static_cast<size_t>(sz) : 4096;
+              return g_cached_page_size;
+            }
+          }}}
+          STUBEOF
+          echo "Patch 5: perfetto base stubs"
+
           echo "All patches applied"
 
       - name: Build libwebrtc.a
         run: |
           cd webrtc-build/src
 
-          EXTRA_GN_ARGS='is_debug=false is_component_build=false is_clang=true rtc_include_tests=false rtc_build_examples=false rtc_use_h264=true rtc_enable_protobuf=false use_custom_libcxx=false use_rtti=true treat_warnings_as_errors=false android_static_analysis="off" android_ndk_api_level=23'
+          EXTRA_GN_ARGS='is_debug=false is_component_build=false is_clang=true rtc_include_tests=false rtc_build_examples=false rtc_use_h264=true rtc_enable_protobuf=false use_custom_libcxx=false use_rtti=true treat_warnings_as_errors=false android_static_analysis="off" android_ndk_api_level=23 enable_libaom=false rtc_include_dav1d_in_internal_decoder_factory=false'
 
           IFS=',' read -ra ARCHS <<< "${{ github.event.inputs.target_arch }}"
 
@@ -129,22 +144,33 @@ jobs:
               ninja -C "$(pwd)/out/build/$ARCH" webrtc || true
             fi
 
-            # Use libwebrtc.a produced by ninja webrtc (rtc_static_library target)
-            # If ninja produced it, it has ALL the right objects — don't overwrite with find|ar
-            if [ -f "$(pwd)/out/build/$ARCH/obj/libwebrtc.a" ]; then
-              echo "ninja webrtc produced libwebrtc.a — using it directly"
-              ls -lh "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
-            else
-              echo "No libwebrtc.a from ninja — falling back to find .o | ar"
-              LLVM_AR=$(find "$(pwd)" -path "*/llvm-build/*/bin/llvm-ar" -type f | head -1)
-              AR_TOOL=${LLVM_AR:-ar}
-              find "$(pwd)/out/build/$ARCH/obj" -name "*.o" \
-                ! -name "jni_onload.o" ! -path "*/clang_x64/*" \
-                > /tmp/obj_list_${ARCH}.txt
-              echo "Found $(wc -l < /tmp/obj_list_${ARCH}.txt) object files"
-              cat /tmp/obj_list_${ARCH}.txt | xargs "$AR_TOOL" rcs "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
-              ls -lh "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
+            # ALWAYS use find .o | ar to capture ALL objects from both build_aar.py AND ninja
+            # ninja webrtc's complete_static_lib only covers the webrtc GN group's deps,
+            # missing targets built by build_aar.py (logging, Thread, RTCCertificate, etc.)
+            LLVM_AR=$(find "$(pwd)" -path "*/llvm-build/*/bin/llvm-ar" -type f | head -1)
+            AR_TOOL=${LLVM_AR:-ar}
+            find "$(pwd)/out/build/$ARCH/obj" -name "*.o" \
+              ! -name "jni_onload.o" ! -path "*/clang_x64/*" \
+              > /tmp/obj_list_${ARCH}.txt
+            OBJ_COUNT=$(wc -l < /tmp/obj_list_${ARCH}.txt)
+            echo "Found $OBJ_COUNT object files"
+            rm -f "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
+            cat /tmp/obj_list_${ARCH}.txt | xargs "$AR_TOOL" rcs "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
+
+            # Compile and add perfetto stubs
+            CLANG=$(find "$(pwd)" -path "*/llvm-build/*/bin/clang++" -type f | head -1)
+            if [ -n "$CLANG" ]; then
+              NDK_SYSROOT=$(find "$(pwd)" -path "*/ndk/*/sysroot" -type d | head -1)
+              case "$ARCH" in
+                arm64-v8a) TARGET="aarch64-linux-android23" ;;
+                armeabi-v7a) TARGET="armv7a-linux-androideabi23" ;;
+              esac
+              "$CLANG" --target=$TARGET --sysroot="$NDK_SYSROOT" -c -std=c++20 \
+                -o /tmp/perfetto_stubs_${ARCH}.o /tmp/perfetto_stubs.cc
+              "$AR_TOOL" rcs "$(pwd)/out/build/$ARCH/obj/libwebrtc.a" /tmp/perfetto_stubs_${ARCH}.o
+              echo "Added perfetto stubs to archive"
             fi
+            ls -lh "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
 
             # Save and clean for disk space
             cp "out/build/$ARCH/obj/libwebrtc.a" "/tmp/libwebrtc-${ARCH}.a"
