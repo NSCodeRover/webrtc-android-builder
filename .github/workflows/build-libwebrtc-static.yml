@@ -148,19 +148,19 @@ jobs:
             rm -rf "$EXTRACT_DIR" && mkdir -p "$EXTRACT_DIR"
 
             # Extract objects from ALL nested .a files (except libwebrtc.a itself)
-            find "$BUILD_OBJ" -name "*.a" ! -name "libwebrtc.a" ! -path "*/clang_x64/*" | while read archive; do
+            find "$BUILD_OBJ" -name "*.a" ! -name "libwebrtc.a" ! -path "*/clang_x64/*" 2>/dev/null | while read archive; do
               SUBDIR="$EXTRACT_DIR/$(echo "$archive" | md5sum | cut -c1-8)"
               mkdir -p "$SUBDIR"
               cd "$SUBDIR" && "$AR_TOOL" x "$archive" 2>/dev/null
             done
 
             # Combine: bare .o files + extracted .o files from nested archives
-            find "$BUILD_OBJ" -name "*.o" ! -name "jni_onload.o" ! -path "*/clang_x64/*" > /tmp/obj_list_${ARCH}.txt
-            find "$EXTRACT_DIR" -name "*.o" ! -name "jni_onload.o" >> /tmp/obj_list_${ARCH}.txt
+            find "$BUILD_OBJ" -name "*.o" ! -name "jni_onload.o" ! -path "*/clang_x64/*" > /tmp/obj_list_${ARCH}.txt 2>/dev/null || true
+            find "$EXTRACT_DIR" -name "*.o" ! -name "jni_onload.o" >> /tmp/obj_list_${ARCH}.txt 2>/dev/null || true
             OBJ_COUNT=$(wc -l < /tmp/obj_list_${ARCH}.txt)
             echo "Found $OBJ_COUNT object files (bare + extracted from .a)"
             rm -f "$BUILD_OBJ/libwebrtc.a"
-            cat /tmp/obj_list_${ARCH}.txt | xargs "$AR_TOOL" rcs "$BUILD_OBJ/libwebrtc.a"
+            xargs "$AR_TOOL" rcs "$BUILD_OBJ/libwebrtc.a" < /tmp/obj_list_${ARCH}.txt || true
 
             # Compile and add perfetto stubs
             CLANG=$(find "$(pwd)" -path "*/llvm-build/*/bin/clang++" -type f | head -1)
