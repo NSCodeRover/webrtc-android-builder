@@ -138,14 +138,41 @@ jobs:
             rm -f "$(pwd)/out/build/$ARCH/.sisoenv" 2>/dev/null || true
             /usr/bin/ninja -C "$(pwd)/out/build/$ARCH" webrtc 2>/dev/null || true
 
-            # Use ninja's libwebrtc.a directly — it already contains all objects
-            echo "Copying ninja-built libwebrtc.a for $ARCH"
-            ls -lh "$(pwd)/out/build/$ARCH/obj/libwebrtc.a"
-            cp "out/build/$ARCH/obj/libwebrtc.a" "/tmp/libwebrtc-${ARCH}.a"
+            # SAVE IMMEDIATELY — before any post-processing can fail
+            BUILD_OBJ="$(pwd)/out/build/$ARCH/obj"
+            if [ -f "$BUILD_OBJ/libwebrtc.a" ]; then
+              cp "$BUILD_OBJ/libwebrtc.a" "/tmp/libwebrtc-${ARCH}.a"
+              echo "Saved libwebrtc.a ($(ls -lh /tmp/libwebrtc-${ARCH}.a | awk '{print $5}'))"
+            else
+              echo "ERROR: libwebrtc.a not found!"
+            fi
 
-            # Clean build artifacts for disk space
+            # Save jar immediately too
+            JAR=$(find "$(pwd)/out/build/$ARCH" -name "libwebrtc.jar" -type f 2>/dev/null | head -1)
+            if [ -n "$JAR" ]; then
+              cp "$JAR" "/tmp/libwebrtc.jar"
+              echo "Saved libwebrtc.jar"
+            fi
+
+            # Add perfetto stubs (optional — if this fails, we still have the .a)
+            LLVM_AR=$(find "$(pwd)" -path "*/llvm-build/*/bin/llvm-ar" -type f 2>/dev/null | head -1)
+            AR_TOOL=${LLVM_AR:-ar}
+            CLANG=$(find "$(pwd)" -path "*/llvm-build/*/bin/clang++" -type f 2>/dev/null | head -1)
+            if [ -n "$CLANG" ] && [ -n "$AR_TOOL" ]; then
+              NDK_SYSROOT=$(find "$(pwd)" -path "*/ndk/*/sysroot" -type d 2>/dev/null | head -1)
+              case "$ARCH" in
+                arm64-v8a) TARGET="aarch64-linux-android23" ;;
+                armeabi-v7a) TARGET="armv7a-linux-androideabi23" ;;
+              esac
+              "$CLANG" --target=$TARGET --sysroot="$NDK_SYSROOT" -c -std=c++20 \
+                -o /tmp/perfetto_stubs_${ARCH}.o /tmp/perfetto_stubs.cc 2>/dev/null && \
+              "$AR_TOOL" rcs "/tmp/libwebrtc-${ARCH}.a" /tmp/perfetto_stubs_${ARCH}.o && \
+              echo "Added perfetto stubs"
+            fi
+
+            # Clean for disk space
             rm -rf "out/build/$ARCH/obj" "out/build/$ARCH/gen" "out/build/$ARCH/clang_x64" 2>/dev/null || true
-            echo "$ARCH done — disk:"
+            echo "$ARCH done — $(ls -lh /tmp/libwebrtc-${ARCH}.a | awk '{print $5}')"
             df -h /
           done
 
